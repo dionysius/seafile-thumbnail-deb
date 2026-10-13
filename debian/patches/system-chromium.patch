@@ -1,0 +1,14 @@
+Description: launch the distribution chromium-headless-shell
+ Playwright otherwise starts its own downloaded browser build.
+Author: dionysius <dragon.dionysius@gmail.com>
+Forwarded: not-needed
+--- a/seafile_thumbnail/screenshot.py
++++ b/seafile_thumbnail/screenshot.py
+@@ -52,6 +52,7 @@
+         self.max_contexts = max_contexts
+         self.browser_launch_kwargs = browser_launch_kwargs or {
+             "headless": True,
++            "executable_path": "/usr/bin/chromium-headless-shell",
+             "args": [
+                 "--disable-gpu",
+                 "--no-sandbox",

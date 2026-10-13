@@ -1,0 +1,3 @@
+debian/thumbnail-server.env usr/share/seafile-thumbnail-server
+usr/lib/seafile-thumbnail-server
+usr/share/doc/seafile-thumbnail-server/THIRD-PARTY-LICENSES.txt.gz

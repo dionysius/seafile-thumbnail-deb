@@ -1,0 +1,111 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/default.mk
+
+export DH_VERBOSE = 1
+MAKEFLAGS += --no-print-directory
+
+PREFIX = /usr/lib/seafile-thumbnail-server
+DEST = $(CURDIR)/debian/tmp$(PREFIX)
+VENV = $(DEST)/venv
+VENVSITE = $(VENV)/lib/python3*/site-packages
+
+# uv (not packaged in debian) builds the python deps
+UV_VERSION = 0.11.26
+UV_SHA256_x86_64 = 6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0
+UV_SHA256_aarch64 = befa1a59c91e96eb601b0fd9a97c03dd666f17baba644b2b4db9c59a767e387e
+UV = $(CURDIR)/debian/.buildbin/uv
+# the venv must match the runtime interpreter; cache inside the build tree, real
+# copies since that cache is thrown away
+export UV_PYTHON_PREFERENCE = only-system
+export UV_LINK_MODE = copy
+export UV_CACHE_DIR = $(CURDIR)/debian/.uvcache
+export UV_NO_DEV = 1
+
+# systemd major version for service file templating (systemd.pc from systemd-dev)
+SYSTEMD_MAJOR := $(shell pkgconf --modversion systemd)
+
+# the venv is compiled for the distribution python; pin the runtime to that minor
+# (python3.pc from libpython3-dev)
+PY3_VER := $(shell pkgconf --modversion python3)
+PY3_NEXT := $(shell echo $(PY3_VER) | awk -F. '{print $$1"."$$2+1}')
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	rm -rf debian/.buildbin debian/.uvcache debian/uv.tar.gz debian/seafile-thumbnail-server.*.service
+
+override_dh_auto_build:
+	mkdir -p debian/.buildbin
+	curl -sSL https://github.com/astral-sh/uv/releases/download/$(UV_VERSION)/uv-$(DEB_BUILD_GNU_CPU)-unknown-$(DEB_BUILD_ARCH_OS)-$(DEB_BUILD_ARCH_LIBC).tar.gz -o debian/uv.tar.gz
+	echo "$(UV_SHA256_$(DEB_BUILD_GNU_CPU)) debian/uv.tar.gz" | sha256sum -c -
+	tar --strip-components=1 -C debian/.buildbin -xzf debian/uv.tar.gz uv-$(DEB_BUILD_GNU_CPU)-unknown-$(DEB_BUILD_ARCH_OS)-$(DEB_BUILD_ARCH_LIBC)/uv
+
+override_dh_auto_test:
+
+# synthesize a project from upstream's requirements, lock it and compile a venv; the
+# build path only lands in its bin/ scripts, removed below. pymysql, redis and pylibmc
+# are imported by the server or seafobj without being declared; seafobj itself comes
+# from seafile-server-data.
+override_dh_auto_install:
+	mkdir -p $(DEST)
+	{ echo '[project]'; echo 'name = "thumbnail-server-deps"'; echo 'version = "0"'; \
+	  echo 'requires-python = ">=3.11"'; echo 'dependencies = ['; \
+	  grep -vE '^[[:space:]]*(#|$$)' requirements.txt | sed 's/.*/  "&",/'; \
+	  echo '  "pymysql",'; \
+	  echo '  "redis",'; \
+	  echo ']'; } > $(DEST)/pyproject.toml
+	cd $(DEST) && $(UV) lock --python /usr/bin/python3
+	$(UV) venv --python /usr/bin/python3 $(VENV)
+# UV_FROZEN only here: for uv lock it means --check-exists
+	cd $(DEST) && UV_FROZEN=1 UV_PROJECT_ENVIRONMENT=$(VENV) $(UV) sync
+# playwright drives the system node (PLAYWRIGHT_NODEJS_PATH) and chromium-headless-shell
+	rm -r $(VENVSITE)/playwright/driver/node
+# pylibmc's PyPI build hits a CPython 3.13 C-API incompatibility; debian's build doesn't
+	cp -a /usr/lib/python3/dist-packages/pylibmc \
+		/usr/lib/python3/dist-packages/_pylibmc.cpython-*.so \
+		/usr/lib/python3/dist-packages/pylibmc-*.egg-info \
+		$(VENVSITE)/
+	cp -a main.py app.py seafile_thumbnail $(DEST)/
+
+# third-party license inventory of the compiled venv
+	mkdir -p debian/tmp/usr/share/doc/seafile-thumbnail-server
+	$(VENV)/bin/python debian/helpers/third-party-python.py \
+		| gzip -9n > debian/tmp/usr/share/doc/seafile-thumbnail-server/THIRD-PARTY-LICENSES.txt.gz
+
+# build-only leftovers: bytecode, the wheels' test suites, type stubs, Cython and C sources,
+# install records, the console scripts nothing calls, the synthesized project
+	find $(DEST) -type d \( -name __pycache__ -o -name tests \) -prune -exec rm -rf {} +
+	find $(VENV)/lib \( -name '*.pyi' -o -name py.typed -o -name '*.pyx' -o -name '*.pxd' -o -name '*.pxi' \
+		-o -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -path '*.dist-info/RECORD' \) -delete
+	find $(VENV)/bin -mindepth 1 ! -name 'python*' -delete
+	rm -rf $(VENV)/.gitignore $(VENV)/include $(DEST)/pyproject.toml $(DEST)/uv.lock
+
+# prebuilt third-party wheels: dwz cannot process them, they are not ours to strip, their
+# shared objects are private
+override_dh_dwz:
+	dh_dwz -Xvenv
+
+override_dh_strip:
+	dh_strip -Xvenv
+
+override_dh_makeshlibs:
+	dh_makeshlibs -Xvenv
+
+# the only system-linked object is pylibmc; dh_shlibdeps skips a package with every object excluded
+override_dh_shlibdeps:
+	dpkg-shlibdeps -Tdebian/seafile-thumbnail-server.substvars \
+		$$(find debian/seafile-thumbnail-server$(PREFIX)/venv -name '_pylibmc*.so')
+
+execute_before_dh_installsystemd:
+	fypp -DSYSTEMD_MAJOR=$(SYSTEMD_MAJOR) debian/seaf-thumbnail-server.service.fypp debian/seafile-thumbnail-server.seaf-thumbnail-server.service
+
+# a seafile.target member, started with it once configured; restarted on upgrade, which
+# --no-start alone would skip
+override_dh_installsystemd:
+	dh_installsystemd --name=seaf-thumbnail-server --no-start --restart-after-upgrade seaf-thumbnail-server.service
+
+override_dh_gencontrol:
+	dh_gencontrol -- \
+		-V'python3:Depends=python3 (>= $(PY3_VER)~), python3 (<< $(PY3_NEXT))'

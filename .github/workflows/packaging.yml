@@ -1,0 +1,39 @@
+name: deb packaging
+
+on:
+  push:
+    tags:
+      - 'debian/*.*.*-*'
+      - 'test/*'
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  build:
+    uses: dionysius/gbp-gha/.github/workflows/build.yml@main
+    secrets:
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+    with:
+      # https://github.com/orgs/community/discussions/26671
+      DEBFULLNAME: dionysius (github-actions)
+      DEBEMAIL: dragon.dionysius+gha@gmail.com
+      images: '["debian:stable", "ubuntu:latest"]'
+      architectures: '["amd64", "arm64"]'
+
+  test:
+    # Install the built .deb artifacts next to the published seafile-server into a real systemd
+    # instance (incus container + amd64 VM per distro) and run seafile-deb's checks, which turn the
+    # thumbnail server on. Gates the release. See test.yml.
+    needs: [build]
+    uses: ./.github/workflows/test.yml
+    with:
+      build_matrix: ${{ needs.build.outputs.matrix }}
+
+  publish:
+    # Create the GitHub release from the built artifacts, then promote it after a delay. See publish.yml.
+    if: startsWith(github.event.ref, 'refs/tags/debian')
+    needs: [build, test]
+    uses: ./.github/workflows/publish.yml

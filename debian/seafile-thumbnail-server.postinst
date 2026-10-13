@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+# Always provide --three-way for ucf comparison (unable to configure, rest of dh_ucf still valid and
+# it should not prompt twice for the same file since the original is cached by ucf)
+if [ "$1" = "configure" ]; then
+  ucf --three-way /usr/share/seafile-thumbnail-server/thumbnail-server.env /etc/seafile/thumbnail-server.env
+fi
+
+#DEBHELPER#

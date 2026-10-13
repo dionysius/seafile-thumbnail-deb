@@ -1,0 +1,38 @@
+Source: seafile-thumbnail-server
+Section: web
+Priority: optional
+Build-Depends: ca-certificates,
+               curl,
+               debhelper-compat (= 13),
+               fypp,
+               libpython3-dev,
+               pkgconf,
+               python3,
+               python3-pylibmc,
+               systemd-dev,
+Maintainer: dionysius <dragon.dionysius@gmail.com>
+Standards-Version: 4.7.2
+Vcs-Git: https://github.com/dionysius/seafile-thumbnail-deb.git
+Vcs-Browser: https://github.com/dionysius/seafile-thumbnail-deb
+Homepage: https://github.com/haiwen/seafile-thumbnail-server
+Rules-Requires-Root: no
+
+Package: seafile-thumbnail-server
+Architecture: any
+Depends: chromium-headless-shell,
+         ffmpeg,
+         libcairo2,
+         nodejs (>= 18),
+         poppler-utils,
+         seafile-server,
+         ${misc:Depends},
+         ${python3:Depends},
+         ${shlibs:Depends},
+Description: Open source cloud storage and file sync server - thumbnail server
+ Seafile is a self-hosted file sync and share solution with high performance
+ and reliability. It offers file syncing across devices, selective sync,
+ client-side and server-side encryption, and team collaboration features.
+ .
+ This package contains the thumbnail server, which takes over thumbnail
+ generation from Seahub and adds thumbnails for more file types. Its Python
+ dependencies ship as a bundled virtualenv resolved with uv at build time.

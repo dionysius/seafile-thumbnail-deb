@@ -1,0 +1,128 @@
+name: test debs
+
+on:
+  workflow_call:
+    inputs:
+      build_matrix:
+        description: 'Build matrix JSON from build.yml (distro/arch/runner per entry).'
+        required: true
+        type: string
+
+jobs:
+
+  prepare-matrix:
+    name: Prepare test matrix
+    # Expand the build matrix (distro×arch) with a container/vm axis and resolve each distro's incus
+    # image. VMs are amd64-only — GitHub's arm64 runners lack /dev/kvm.
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - name: Set up incus
+        uses: dionysius/incus-zabbly-actions/setup@v1
+      - name: Generate matrix
+        id: gen
+        env:
+          BUILD_MATRIX: ${{ inputs.build_matrix }}
+        run: |
+          set -euo pipefail
+          # Debian stable, from Debian's authoritative release pointer
+          deb_release=$(curl -fsSL https://deb.debian.org/debian/dists/stable/Release)
+          deb_cn=$(awk '/^Codename:/{print $2}' <<<"$deb_release")
+          [ -n "$deb_cn" ] || { echo "could not resolve debian stable codename" >&2; exit 1; }
+
+          # Ubuntu: the newest LTS (even YY, .04).
+          aliases=$(incus image alias list images: -f csv -c a | sort -u)
+          mapfile -t lts < <(grep -E '^ubuntu/[0-9][0-9]\.[0-9][0-9]$' <<<"$aliases" \
+            | cut -d/ -f2 | awk -F. '($1%2==0)&&($2=="04")' | sort -Vru | head -1)
+          [ "${#lts[@]}" -ge 1 ] || { echo "need >=1 ubuntu LTS, got: ${lts[*]:-none}" >&2; exit 1; }
+          declare -A ucn
+          for v in "${lts[@]}"; do ucn[$v]=$(incus image info "images:ubuntu/$v" | awk '/^ *release:/{print $2; exit}'); done
+
+          out='[]'
+          while IFS= read -r e; do
+            distro=$(jq -r '.distro' <<<"$e")
+            case "$distro" in
+              debian-*)      cn=$deb_cn;             ref="images:debian/$cn" ;;
+              ubuntu-latest) cn=${ucn[${lts[0]}]};   ref="images:ubuntu/$cn" ;;
+              *) echo "test-matrix: unmapped distro '$distro'" >&2; exit 1 ;;
+            esac
+            base=$(jq -c --arg ref "$ref" --arg cn "$cn" '. + {incus_image:$ref, codename:$cn}' <<<"$e")
+            out=$(jq -c --argjson b "$base" '. + [$b + {kind:"container"}]' <<<"$out")
+            [ "$(jq -r '.arch' <<<"$e")" = amd64 ] && \
+              out=$(jq -c --argjson b "$base" '. + [$b + {kind:"vm"}]' <<<"$out")
+          done < <(jq -c '.include[]' <<<"$BUILD_MATRIX")
+          echo "matrix={\"include\":$out}" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: ${{ matrix.codename }} (${{ matrix.arch }}, ${{ matrix.kind }})
+    needs: prepare-matrix
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Check out seafile-deb for its test scripts
+        uses: actions/checkout@v6
+        with:
+          repository: dionysius/seafile-deb
+          path: seafile-deb
+
+      - name: Download built packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: results_${{ matrix.distro }}_*
+          merge-multiple: true
+          path: artifacts
+
+      - name: Set up incus
+        uses: dionysius/incus-zabbly-actions/setup@v1
+
+      - name: Launch instance
+        uses: dionysius/incus-zabbly-actions/launch@v1
+        with:
+          name: seafile-test
+          image: ${{ matrix.incus_image }}
+          vm: ${{ matrix.kind == 'vm' }}
+
+      - name: Prepare the system
+        # the published seafile-server, then the built thumbnail server next to it. Ubuntu has
+        # no chromium-headless-shell deb; it comes from the xtradeb PPA, pinned to chromium only.
+        uses: dionysius/incus-zabbly-actions/exec@v1
+        with:
+          instance: seafile-test
+          run: |
+            bash seafile-deb/.github/test/prepare.sh apt
+            if [ "$(. /etc/os-release; echo "$ID")" = ubuntu ]; then
+              printf '%s\n' 'Package: chromium*' 'Pin: release o=LP-PPA-xtradeb-apps' 'Pin-Priority: 500' '' \
+                'Package: *' 'Pin: release o=LP-PPA-xtradeb-apps' 'Pin-Priority: -1' \
+                > /etc/apt/preferences.d/xtradeb-chromium
+              apt-get install -y software-properties-common
+              add-apt-repository -y ppa:xtradeb/apps
+            fi
+            apt-get install -y "$PWD"/artifacts/*_"$(dpkg --print-architecture)".deb
+
+      - name: Boot-check
+        uses: dionysius/incus-zabbly-actions/exec@v1
+        with:
+          instance: seafile-test
+          run: bash seafile-deb/.github/test/boot-check.sh --out "$GITHUB_STEP_SUMMARY"
+
+      - name: Proxy check
+        # nginx with seafile-server's example in front of the stack, see seafile-deb's
+        # .github/test/proxy-check.sh.
+        uses: dionysius/incus-zabbly-actions/exec@v1
+        with:
+          instance: seafile-test
+          run: bash seafile-deb/.github/test/proxy-check.sh --out "$GITHUB_STEP_SUMMARY"
+
+      - name: Thumbnail check
+        # the thumbnail server behind that proxy
+        uses: dionysius/incus-zabbly-actions/exec@v1
+        with:
+          instance: seafile-test
+          run: bash .github/test/thumbnail-check.sh --out "$GITHUB_STEP_SUMMARY"

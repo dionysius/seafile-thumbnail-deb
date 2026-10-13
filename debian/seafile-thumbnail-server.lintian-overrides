@@ -1,0 +1,12 @@
+# the unit is bundled in seafile.target
+systemd-service-file-refers-to-unusual-wantedby-target seafile.target [usr/lib/systemd/system/seaf-thumbnail-server.service]
+
+# venv wheels ship as built: their own private shared objects
+unstripped-binary-or-object [usr/lib/seafile-thumbnail-server/venv/*]
+embedded-library * [usr/lib/seafile-thumbnail-server/venv/*]
+library-not-linked-against-libc [usr/lib/seafile-thumbnail-server/venv/*]
+shared-library-lacks-prerequisites [usr/lib/seafile-thumbnail-server/venv/*]
+unusual-interpreter * [usr/lib/seafile-thumbnail-server/venv/*]
+executable-not-elf-or-script [usr/lib/seafile-thumbnail-server/venv/*]
+# playwright runs its driver as `node cli.js`
+script-not-executable [usr/lib/seafile-thumbnail-server/venv/lib/python3*/site-packages/playwright/driver/package/cli.js]

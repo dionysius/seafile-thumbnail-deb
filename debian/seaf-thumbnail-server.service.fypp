@@ -1,0 +1,100 @@
+# Please consider only editing this file through systemd drop-in files
+# (e.g. `systemctl edit seaf-thumbnail-server`). This will enable you to get updates
+# to this file automatically, without your overrides being lost.
+
+# Refer to the manpage `systemd.unit` for detailed documentation on each option.
+[Unit]
+Description=Seafile thumbnail server
+Documentation=https://manual.seafile.com https://github.com/dionysius/seafile-deb
+PartOf=seafile.target
+# Permission checks go through seahub.
+After=network.target seafile-migrate.service seahub.service seafile.target
+Requires=seafile-migrate.service
+# A database or cache on this host starts before and stops after this unit.
+After=mariadb.service mysql.service redis-server.service memcached.service
+
+# If running behind a reverse proxy - running on this system - consider ordering it before also:
+#Before=nginx.service
+
+# Refer to the manpages `systemd.service` and `systemd.exec` for detailed documentation on each option.
+[Service]
+SyslogIdentifier=seaf-thumbnail-server
+## Service execution environment
+# Service configuration files, the latter overriding the former.
+EnvironmentFile=%E/seafile/seafile.env
+EnvironmentFile=%E/seafile/thumbnail-server.env
+Environment=SEAFILE_LOG_TO_STDOUT=true
+# shared with seahub
+Environment=THUMBNAIL_ROOT=%C/seafile/thumbnail
+Environment=PLAYWRIGHT_NODEJS_PATH=/usr/bin/node
+# Notifies readiness once it listens.
+Type=notify
+ExecStart=/usr/lib/seafile-thumbnail-server/venv/bin/python /usr/lib/seafile-thumbnail-server/main.py
+WorkingDirectory=/usr/lib/seafile-thumbnail-server
+# Also covers the exit on exceeding THUMBNAIL_MEMORY_LIMIT.
+Restart=on-failure
+RestartSec=5s
+
+## Permissions and directories
+User=seafile
+Group=seafile
+ConfigurationDirectory=seafile::ro
+ConfigurationDirectoryMode=0500
+CacheDirectory=seafile
+CacheDirectoryMode=0750
+UMask=0027
+
+## Connection and process limits
+#TasksMax=128
+# Customize limits to your setup and expected usage spikes.
+#CPUQuota=200%
+#MemoryHigh=2G
+#MemoryMax=4G
+
+## Sandboxing and isolation
+# An overview is available using `systemd-analyze security <service>`.
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+SecureBits=noroot noroot-locked
+
+# Filesystem protection
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=noaccess
+ProcSubset=pid
+
+# Namespace isolation
+PrivateTmp=disconnected
+PrivateDevices=true
+PrivateIPC=true
+#:if SYSTEMD_MAJOR >= 258
+PrivateBPF=true
+#:endif
+
+# Kernel and system protection
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=strict
+
+# Execution restrictions
+# Python and native wheels need writable+executable memory.
+MemoryDenyWriteExecute=false
+SetLoginEnvironment=false
+
+# System call and network filtering
+SystemCallFilter=@system-service
+# V8 (node, chromium) allocates memory protection keys.
+SystemCallFilter=@pkey
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+
+# Cleanup
+RemoveIPC=true
+
+[Install]
+WantedBy=seafile.target

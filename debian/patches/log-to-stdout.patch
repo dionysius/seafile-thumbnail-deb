@@ -1,0 +1,20 @@
+Description: start the server when logging to stdout
+ The server is only constructed and started in the log-file branch, so with
+ SEAFILE_LOG_TO_STDOUT=true the process exits right after configuring logging.
+Author: dionysius <dragon.dionysius@gmail.com>
+Forwarded: not-yet
+--- a/main.py
++++ b/main.py
+@@ -78,9 +78,9 @@ def run_server(loglevel='info'):
+         logging.root.setLevel(level)
+         logging.root.addHandler(handler)
+ 
+-        thumbnail_server = ThumbnailServer(TASK_WORKERS)
+-        thumbnail_server.start()
+-        thumbnail_server.wait()
++    thumbnail_server = ThumbnailServer(TASK_WORKERS)
++    thumbnail_server.start()
++    thumbnail_server.wait()
+     
+ 
+ if __name__ == '__main__':
