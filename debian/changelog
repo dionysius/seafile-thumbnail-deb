@@ -1,3 +1,10 @@
+seafile-thumbnail-server (14.0.10-2) unstable; urgency=medium
+
+  * seaf-thumbnail-server is no longer ordered after seafile.target, so starting or restarting the target waits until it is ready
+  * CI tests only the thumbnail server: thumbnail-check sets up nginx with the shipped example itself, seafile-deb's proxy-check is dropped, boot-check stays
+
+ -- dionysius <dragon.dionysius@gmail.com>  Thu, 19 Nov 2026 06:25:46 +0100
+
 seafile-thumbnail-server (14.0.10-1) unstable; urgency=medium
 
   * Initial release
