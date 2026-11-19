@@ -1,0 +1,234 @@
+import logging
+import time
+import asyncio
+import os.path
+import os
+import json
+from urllib.parse import quote
+
+from seafile_thumbnail.settings import THUMBNAIL_EXTENSION
+from seafile_thumbnail.thumbnail import generate_thumbnail
+from seafile_thumbnail.constants import TEXT_CONTENT_TYPE, THUMBNAIL_CONTENT_TYPE, EMPTY_BYTES
+from seafile_thumbnail.utils import get_thumbnail_src, get_share_link_thumbnail_src, need_generate_thumbnail
+from seafile_thumbnail.thumbnail_task_manager import thumbnail_task_manager
+
+logger = logging.getLogger(__name__)
+
+TIMEOUT = 60
+
+
+def gen_response_start(status, content_type):
+    return {
+        'type': 'http.response.start',
+        'status': status,
+        'headers': [
+            [b'Content-Type', content_type],
+            [b'Cache-Control', b'max-age=604800, private']
+        ]
+    }
+
+def gen_response_error_start(status, content_type):
+    return {
+        'type': 'http.response.start',
+        'status': status,
+        'headers': [
+            [b'Content-Type', content_type],
+            [b'Cache-Control', b'no-store']
+        ]
+    }
+
+
+def gen_response_body(body):
+    return {
+        'type': 'http.response.body',
+        'body': body
+    }
+
+
+def gen_error_response(status, error_msg):
+    response_start = gen_response_error_start(status, TEXT_CONTENT_TYPE)
+    error_body = {
+        'error': error_msg
+    }
+    response_body = gen_response_body(json.dumps(error_body).encode('utf-8'))
+    return response_start, response_body
+
+
+def gen_text_response(text):
+    response_start = gen_response_start(200, TEXT_CONTENT_TYPE)
+    response_body = gen_response_body(text.encode('utf-8'))
+
+    return response_start, response_body
+
+
+def gen_cache_response():
+    response_start = gen_response_start(304, THUMBNAIL_CONTENT_TYPE)
+    response_body = gen_response_body(EMPTY_BYTES)
+
+    return response_start, response_body
+
+def generate_json_response(result, status=200, content_type='application/json; charset=utf-8'):
+    """generate json response"""
+    result_json = json.dumps(result)
+    response_start = gen_response_start(status, content_type)
+    response_body = gen_response_body(result_json.encode('utf-8'))
+    return response_start, response_body
+
+
+async def gen_thumbnail_response(request, thumbnail_info):
+    content_type = 'application/json; charset=utf-8'
+    result = {}
+    repo_id = thumbnail_info['repo_id']
+    size = thumbnail_info['size']
+    path = thumbnail_info['file_path']
+    task_result, status = generate_thumbnail(request, thumbnail_info)
+    if status >= 500:
+        logger.error(task_result)
+        err_msg = 'Failed to create thumbnail.'
+        return gen_error_response(status, err_msg)
+    if status == 400:
+        result['encoded_thumbnail_src'] = ''
+        return generate_json_response(result)
+    
+    src = get_thumbnail_src(repo_id, size, path)
+    result['encoded_thumbnail_src'] = quote(src)
+    if not isinstance(task_result, bool):
+        start_time = time.time()
+        while True:
+            success, error_msg = thumbnail_task_manager.query_status(task_result)
+            if success:
+                if error_msg:
+                    result['encoded_thumbnail_src'] = ''
+                break
+            if time.time() - start_time > TIMEOUT:
+                return gen_error_response(400, 'Timeout Error.')
+            await asyncio.sleep(0.2)
+
+    return generate_json_response(result, status, content_type)
+
+
+async def thumbnail_get(request, thumbnail_info):
+    """
+    handle thumbnail src from repo file list
+    return thumbnail file to web
+    """
+    thumbnail_file = thumbnail_info['thumbnail_path']
+    last_modified = thumbnail_info['last_modified']
+    etag = thumbnail_info['etag']
+    
+    if need_generate_thumbnail(thumbnail_info):
+        task_result, status = generate_thumbnail(request, thumbnail_info)
+        if status >= 500:
+            logger.error(task_result)
+            err_msg = 'Failed to get thumbnail.'
+            return gen_error_response(status, err_msg)
+        if not isinstance(task_result, bool):
+            start_time = time.time()
+            while True:
+                status, error_msg = thumbnail_task_manager.query_status(task_result)
+                if status:
+                    if error_msg:
+                        return gen_error_response(415, error_msg)
+                    break
+                if time.time() - start_time > TIMEOUT:
+                    return gen_error_response(400, 'Timeout Error.')
+                await asyncio.sleep(0.2)
+    try:
+        with open(thumbnail_file, 'rb') as f:
+            thumbnail = f.read()
+            response_start = gen_response_start(200, 'image/' + THUMBNAIL_EXTENSION)
+            response_body = gen_response_body(thumbnail)
+            if thumbnail:
+                response_start['headers'].append([b'Last-Modified', last_modified.encode('utf-8')])
+                response_start['headers'].append([b'ETag', etag.encode('utf-8')])
+
+            return response_start, response_body
+    except FileNotFoundError:
+        logger.warning('Thumbnail file disappeared before read: %s', thumbnail_file)
+        err_msg = 'Failed to get thumbnail.'
+        return gen_error_response(400, err_msg)
+    except Exception as e:
+        logger.error(e)
+        err_msg = 'Failed to get thumbnail.'
+        return gen_error_response(400, err_msg)
+
+
+async def share_link_thumbnail_create(request, thumbnail_info):
+    """generate thumbnail from dir download link page
+
+    return thumbnail src to web
+    """
+    content_type = 'application/json; charset=utf-8'
+    result = {}
+    token = thumbnail_info['token']
+    size = thumbnail_info['size']
+    file_path = thumbnail_info['file_path']
+
+    task_result, status = generate_thumbnail(request, thumbnail_info)
+    if status >= 500:
+        logger.error(task_result)
+        err_msg = 'Failed to create thumbnail.'
+        return gen_error_response(status, err_msg)
+    if status == 400:
+        result['encoded_thumbnail_src'] = ''
+        return generate_json_response(result)
+    
+    src = get_share_link_thumbnail_src(token, size, file_path)
+    result['encoded_thumbnail_src'] = quote(src)
+    if not isinstance(task_result, bool):
+        start_time = time.time()
+        while True:
+            success, error_msg = thumbnail_task_manager.query_status(task_result)
+            if success:
+                if error_msg:
+                    result['encoded_thumbnail_src'] = ''
+                break
+            if time.time() - start_time > TIMEOUT:
+                return gen_error_response(400, 'Timeout Error.')
+            await asyncio.sleep(0.2)
+    return generate_json_response(result, status, content_type)
+
+
+async def share_link_thumbnail_get(request, thumbnail_info):
+    """ handle thumbnail src from dir download link page
+
+    return thumbnail file to web
+    """
+    thumbnail_file = thumbnail_info['thumbnail_path']
+    last_modified = thumbnail_info['last_modified']
+    etag = thumbnail_info['etag']
+
+    
+    if need_generate_thumbnail(thumbnail_info):
+        task_result, status = generate_thumbnail(request, thumbnail_info)
+        if status != 200:
+            logger.error(task_result)
+            err_msg = 'Failed to get thumbnail.'
+            return gen_error_response(status, err_msg)
+        if not isinstance(task_result, bool):
+            start_time = time.time()
+            while True:
+                status, error_msg = thumbnail_task_manager.query_status(task_result)
+                if status:
+                    if error_msg:
+                        return gen_error_response(415, error_msg)
+                    break
+                if time.time() - start_time > TIMEOUT:
+                    return gen_error_response(400, 'Timeout Error.')
+                await asyncio.sleep(0.2)
+    try:
+        with open(thumbnail_file, 'rb') as f:
+            thumbnail = f.read()
+            response_start = gen_response_start(200, 'image/' + THUMBNAIL_EXTENSION)
+            response_start['headers'].append([b'ETag', etag.encode('utf-8')])
+            response_start['headers'].append([b'Last-Modified', last_modified.encode('utf-8')])
+            response_body = gen_response_body(thumbnail)
+            return response_start, response_body
+    except FileNotFoundError:
+        logger.warning('Thumbnail file disappeared before read: %s', thumbnail_file)
+        err_msg = 'Failed to get thumbnail.'
+        return gen_error_response(400, err_msg)
+    except Exception as e:
+        logger.error(e)
+        err_msg = 'Failed to get thumbnail.'
+        return gen_error_response(400, err_msg)

@@ -1,0 +1,151 @@
+import os
+import sys
+
+PROJECT_ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
+
+# url
+SITE_ROOT = '/'
+INNER_SEAHUB_SERVICE_URL = 'http://127.0.0.1:8000'
+
+
+# dir
+CONF_DIR = '/data/conf/'
+LOG_DIR = '.'
+# LOG_DIR = os.path.join(os.path.dirname(PROJECT_ROOT), 'logs') # abs path
+# VIDEO thumbnail
+ENABLE_VIDEO_THUMBNAIL = True
+THUMBNAIL_VIDEO_FRAME_TIME = 5  # use the frame at 5 second as thumbnail
+SAFETY_MARGIN = 0.1
+# xmind thumbnail
+ENABLE_XMIND_THUMBNAIL = True
+# pdf thumbnails
+ENABLE_PDF_THUMBNAIL = True
+
+# size(MB) limit for generate thumbnail
+# THUMBNAIL_IMAGE_SIZE_LIMIT: original file size on disk (default 30MB)
+# THUMBNAIL_IMAGE_ORIGINAL_SIZE_LIMIT: decoded image memory size in MB (width * height * 4 bytes, default 256MB)
+# Both limits protect against memory issues from different angles
+THUMBNAIL_IMAGE_SIZE_LIMIT = 30
+
+# for thumbnail: height(px) and width(px)
+THUMBNAIL_DEFAULT_SIZE = 256
+THUMBNAIL_SIZE_LIMIT = [THUMBNAIL_DEFAULT_SIZE, 512, 1024]
+
+# Absolute filesystem path to the directory that will hold thumbnail files.
+SEAHUB_DATA_ROOT = os.path.join(PROJECT_ROOT, '../../seahub-data')
+if os.path.exists(SEAHUB_DATA_ROOT):
+    THUMBNAIL_ROOT = os.path.join(SEAHUB_DATA_ROOT, 'thumbnail')
+else:
+    THUMBNAIL_ROOT = os.path.join(PROJECT_ROOT, 'seahub/thumbnail/thumb')
+
+THUMBNAIL_EXTENSION = 'jpeg'
+
+
+# session key
+SESSION_KEY = 'sessionid'
+
+JWT_PRIVATE_KEY = ""
+# thread count (creates 4 threads per worker: ImageManager, PdfManager, VideoManager, SeadocManager)
+# total threads = TASK_WORKERS * 4 + 1 (monitor thread)
+TASK_WORKERS = 3
+
+UVICORN_LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "()": "uvicorn.logging.DefaultFormatter",
+            "fmt": "[%(asctime)s] %(levelprefix)s %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+            "use_colors": False,
+        },
+        "access": {
+            "()": "uvicorn.logging.AccessFormatter",
+            "fmt": "[%(asctime)s] %(levelprefix)s %(client_addr)s - \"%(request_line)s\" %(status_code)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+            "use_colors": False,
+        },
+    },
+    "handlers": {
+        "default": {
+            "formatter": "default",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+        },
+        "access": {
+            "formatter": "access",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        "uvicorn": {"handlers": ["default"], "level": "INFO"},
+        "uvicorn.error": {"level": "INFO"},
+        "uvicorn.access": {
+            "handlers": ["access"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
+
+
+
+# ======================== local settings ======================== #
+try:
+    from local_settings import *
+except ImportError as e:
+    pass
+
+try:
+    if os.path.exists(CONF_DIR):
+        sys.path.insert(0, CONF_DIR)
+    from seafile_thumbnail_settings import *
+except ImportError as e:
+    pass
+
+# ======================== settings in env ======================= #
+INNER_SEAHUB_SERVICE_URL = os.getenv('INNER_SEAHUB_SERVICE_URL') or INNER_SEAHUB_SERVICE_URL
+SITE_ROOT = os.getenv('SITE_ROOT') or SITE_ROOT
+
+CONF_DIR = os.getenv('CONF_DIR') or CONF_DIR
+LOG_DIR = os.getenv('LOG_DIR') or LOG_DIR
+THUMBNAIL_ROOT = os.getenv('THUMBNAIL_ROOT') or THUMBNAIL_ROOT
+JWT_PRIVATE_KEY = os.getenv('JWT_PRIVATE_KEY') or JWT_PRIVATE_KEY
+THUMBNAIL_IMAGE_ORIGINAL_SIZE_LIMIT = int(os.environ.get('THUMBNAIL_IMAGE_ORIGINAL_SIZE_LIMIT', 256))
+THUMBNAIL_PDF_SIZE_LIMIT = int(os.environ.get('THUMBNAIL_PDF_SIZE_LIMIT', 50))
+THUMBNAIL_IMAGE_SIZE_LIMIT = int(os.environ.get('THUMBNAIL_IMAGE_SIZE_LIMIT', THUMBNAIL_IMAGE_SIZE_LIMIT))
+TASK_WORKERS = int(os.environ.get('THUMBNAIL_TASK_WORKERS', TASK_WORKERS))
+
+# config for mysql
+MYSQL_DB_HOST = os.environ.get('SEAFILE_MYSQL_DB_HOST', 'db')
+MYSQL_DB_PORT = int(os.environ.get('SEAFILE_MYSQL_DB_PORT', 3306))
+MYSQL_DB_USER = os.environ.get('SEAFILE_MYSQL_DB_USER', 'root')
+MYSQL_DB_PWD = os.environ.get('SEAFILE_MYSQL_DB_PASSWORD', '')
+MYSQL_SEAHUB_DB_NAME = os.environ.get('SEAFILE_MYSQL_DB_SEAHUB_DB_NAME', 'seahub_db')
+MYSQL_SEAFILE_DB_NAME = os.environ.get('SEAFILE_MYSQL_DB_SEAFILE_DB_NAME', 'seafile_db')
+MYSQL_CCNET_DB_NAME = os.environ.get('SEAFILE_MYSQL_DB_CCNET_DB_NAME', 'ccnet_db')
+
+# config for redis
+REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+REDIS_PASSWORD = os.environ.get('REDIS_PASSWORD', '')
+
+# config for multi storage
+ENABLE_MULTI_STORAGE = os.environ.get('SEAF_SERVER_STORAGE_TYPE', '') == 'multiple'
+
+# config for logging
+if os.getenv('SEAFILE_LOG_TO_STDOUT', 'false') != 'true':
+    UVICORN_LOG_CONFIG['handlers'] = {
+        'rotating': {
+            'class': 'logging.handlers.TimedRotatingFileHandler',
+            'filename': os.path.join(LOG_DIR, 'thumbnail-server.log'),
+            'when': 'D',
+            'interval': 1,
+            'backupCount': 7,
+            'encoding': 'utf-8',
+            'formatter': 'default',
+        },
+    }
+    UVICORN_LOG_CONFIG['loggers']['uvicorn']['handlers'] = ['rotating']
+    UVICORN_LOG_CONFIG['loggers']['uvicorn.access']['handlers'] = ['rotating']
