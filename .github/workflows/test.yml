@@ -66,7 +66,7 @@ jobs:
       - name: Check out
         uses: actions/checkout@v6
 
-      - name: Check out seafile-deb for its test scripts
+      - name: Check out seafile-deb for its prepare.sh and boot-check.sh
         uses: actions/checkout@v6
         with:
           repository: dionysius/seafile-deb
@@ -107,21 +107,14 @@ jobs:
             apt-get install -y "$PWD"/artifacts/*_"$(dpkg --print-architecture)".deb
 
       - name: Boot-check
+        # the stack is up with the thumbnail server installed, see seafile-deb's .github/test/boot-check.sh
         uses: dionysius/incus-zabbly-actions/exec@v1
         with:
           instance: seafile-test
           run: bash seafile-deb/.github/test/boot-check.sh --out "$GITHUB_STEP_SUMMARY"
 
-      - name: Proxy check
-        # nginx with seafile-server's example in front of the stack, see seafile-deb's
-        # .github/test/proxy-check.sh.
-        uses: dionysius/incus-zabbly-actions/exec@v1
-        with:
-          instance: seafile-test
-          run: bash seafile-deb/.github/test/proxy-check.sh --out "$GITHUB_STEP_SUMMARY"
-
       - name: Thumbnail check
-        # the thumbnail server behind that proxy
+        # the thumbnail server behind seafile-server's nginx example, see .github/test/thumbnail-check.sh
         uses: dionysius/incus-zabbly-actions/exec@v1
         with:
           instance: seafile-test

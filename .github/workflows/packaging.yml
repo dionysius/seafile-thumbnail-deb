@@ -25,8 +25,8 @@ jobs:
 
   test:
     # Install the built .deb artifacts next to the published seafile-server into a real systemd
-    # instance (incus container + amd64 VM per distro) and run seafile-deb's checks, which turn the
-    # thumbnail server on. Gates the release. See test.yml.
+    # instance (incus container + amd64 VM per distro), check the stack boots and run the thumbnail
+    # check. Gates the release. See test.yml.
     needs: [build]
     uses: ./.github/workflows/test.yml
     with:

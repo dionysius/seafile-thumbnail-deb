@@ -1,9 +1,9 @@
 #!/bin/bash
-# Exercise the thumbnail server through seafile-server's nginx example: set
-# ENABLE_THUMBNAIL_SERVER in seahub_settings.py and uncomment the example's /thumbnail/ route,
-# then fetch a thumbnail per sample file and check that seahub's listing offers the server's
-# thumbnails. Run after seafile-deb's proxy-check.sh, which sets up nginx under
-# seafile.example.com and the proxytest account.
+# Exercise the thumbnail server through seafile-server's nginx example, served under
+# seafile.example.com with a self-signed certificate: enable it as the wiki describes
+# (ENABLE_THUMBNAIL_SERVER in seahub_settings.py, the example's /thumbnail/ route, restart
+# seafile.target), then fetch a thumbnail per sample file and check that seahub's listing offers
+# the server's thumbnails. Run after seafile-deb's boot-check.sh.
 #
 # Runs IN PLACE as root, requires systemd - ephemeral testbed only.
 #
@@ -12,7 +12,7 @@ set -u
 OUT="${OUT:-/dev/stdout}"
 HOST=seafile.example.com
 B="https://$HOST"
-U=proxytest@example.com; P=proxytest-password-123
+U=thumbtest@example.com; P=thumbtest-password-123
 PY=/usr/lib/seafile-thumbnail-server/venv/bin/python
 SITE=/etc/nginx/sites-available/seafile
 info()  { printf '\n========== %s ==========\n' "$1"; }
@@ -25,29 +25,43 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -d /run/systemd/system ] || error 4 "systemd is not running (/run/systemd/system missing)"
-[ -f "$SITE" ] || error 4 "$SITE missing, run seafile-deb's proxy-check.sh first"
+export DEBIAN_FRONTEND=noninteractive
 rc=0; rows=()
 ok()   { echo "OK   $1"; rows+=("| $1 | ✅ |"); }
 fail() { echo "FAIL $1${2:+: $2}"; rows+=("| $1 | ❌ |"); rc=1; }
 http() { curl -sS -k -o /dev/null -w '%{http_code}' --max-time 30 "$@" 2>/dev/null || echo 000; }
 
-info "Switch seahub and the proxy to the thumbnail server"
+info "nginx with the shipped example, its /thumbnail/ route uncommented"
+apt-get install -y -qq nginx ssl-cert >/dev/null
+grep -q "$HOST" /etc/hosts || echo "127.0.0.1 $HOST" >> /etc/hosts
+sed -e "s|/etc/letsencrypt/live/$HOST/fullchain.pem|/etc/ssl/certs/ssl-cert-snakeoil.pem|" \
+    -e "s|/etc/letsencrypt/live/$HOST/privkey.pem|/etc/ssl/private/ssl-cert-snakeoil.key|" \
+    -e '/#location \/thumbnail\//,/#}/ s|^    #|    |' \
+    /usr/share/doc/seafile-server/examples/nginx/seafile.conf > "$SITE"
+sed -n '/^    location \/thumbnail\//,/}/p' "$SITE" | grep -q 'proxy_pass http://127.0.0.1:8088;' \
+  && ok "nginx example routes /thumbnail/ to 127.0.0.1:8088" || fail "nginx example routes /thumbnail/ to 127.0.0.1:8088"
+rm -f /etc/nginx/sites-enabled/default
+ln -sf ../sites-available/seafile /etc/nginx/sites-enabled/seafile
+nginx -t 2>&1 | tail -1
+systemctl restart nginx
+
+info "Public address and ENABLE_THUMBNAIL_SERVER, then restart seafile.target"
+sed -i -e "s|^SEAFILE_SERVER_PROTOCOL=.*|SEAFILE_SERVER_PROTOCOL=https|" \
+       -e "s|^SEAFILE_SERVER_HOSTNAME=.*|SEAFILE_SERVER_HOSTNAME=$HOST|" /etc/seafile/seafile.env
 # set the value instead of uncommenting the template's
 sed -i -E 's|^#? *ENABLE_THUMBNAIL_SERVER *=.*|ENABLE_THUMBNAIL_SERVER = True|' /etc/seafile/seahub_settings.py
 grep -q '^ENABLE_THUMBNAIL_SERVER = True' /etc/seafile/seahub_settings.py \
   || echo 'ENABLE_THUMBNAIL_SERVER = True' >> /etc/seafile/seahub_settings.py
-sed -i '/#location \/thumbnail\//,/#}/ s|^    #|    |' "$SITE"
-sed -n '/^    location \/thumbnail\//,/}/p' "$SITE" | grep -q 'proxy_pass http://127.0.0.1:8088;' \
-  && ok "nginx example routes /thumbnail/ to 127.0.0.1:8088" || fail "nginx example routes /thumbnail/ to 127.0.0.1:8088"
-nginx -t 2>&1 | tail -1
-systemctl reload nginx
-# both are Type=notify: restart returns once they listen
-systemctl restart seahub.service seaf-thumbnail-server.service && ok "seahub and seaf-thumbnail-server restart" \
-  || fail "seahub and seaf-thumbnail-server restart" "$(systemctl is-active seahub.service seaf-thumbnail-server.service | tr '\n' ' ')"
+# the target is ordered after its Type=notify members: restart returns once they listen
+systemctl restart seafile.target && systemctl is-active --quiet seahub.service \
+  && systemctl is-active --quiet seaf-thumbnail-server.service && ok "seafile.target restarts with the thumbnail server" \
+  || fail "seafile.target restarts with the thumbnail server" "$(systemctl is-active seahub.service seaf-thumbnail-server.service | tr '\n' ' ')"
 code=$(http "$B/thumbnail/ping")
 [ "$code" = 200 ] && ok "ping via /thumbnail/" || fail "ping via /thumbnail/" "HTTP $code"
 
 info "Login and a test library"
+out=$(seahub-reset-admin --noinput --username=thumbtest --email=$U --password=$P 2>&1) \
+  || grep -q DuplicatedContactEmailError <<<"$out" || echo "seahub-reset-admin: $(tail -n 1 <<<"$out")"
 cj=$(mktemp)
 http -c "$cj" "$B/accounts/login/" >/dev/null
 csrf=$(awk '/sfcsrftoken/{print $7}' "$cj")
